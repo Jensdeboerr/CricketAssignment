@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import pandas as pd
 import numpy as np
+import matplotlib
+
 
 # ---------------------------------------------------------------------------
 # Style defaults — override here to change the look of all charts
@@ -120,7 +122,7 @@ def plot_avg_vs_sr(
 
     # Assign a colour per country
     countries = filtered["country"].unique()
-    cmap = plt.cm.get_cmap("tab20", len(countries))
+    cmap = matplotlib.colormaps.get_cmap("tab20").resampled(len(countries))
     colour_map = {c: cmap(i) for i, c in enumerate(countries)}
 
     for country, group in filtered.groupby("country"):
