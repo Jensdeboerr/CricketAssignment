@@ -176,19 +176,31 @@ def plot_format_comparison(
         _, ax = plt.subplots(figsize=(10, 5))
 
     # Compute mean batting_avg per country per format
+    # Skip any DataFrames that are empty or missing required columns
     summary = {}
     for fmt_label, df in dfs.items():
+        if df.empty or "batting_avg" not in df.columns or "country" not in df.columns:
+            print(f"[visualisation] Skipping {fmt_label} — no data available.")
+            continue
         summary[fmt_label] = (
             df.dropna(subset=["batting_avg", "country"])
             .groupby("country")["batting_avg"]
             .mean()
         )
 
+    if not summary:
+        ax.text(0.5, 0.5, "No format comparison data available",
+                ha="center", va="center", transform=ax.transAxes, fontsize=12)
+        ax.set_title("Mean batting average by country and format")
+        return ax
+
     combined = pd.DataFrame(summary).fillna(0)
 
-    # Keep top countries by total player representation
+    # Keep top countries by total player representation (only from non-empty frames)
+    valid_dfs = [df for df in dfs.values()
+                 if not df.empty and "country" in df.columns]
     top_countries = (
-        pd.concat([df["country"] for df in dfs.values()])
+        pd.concat([df["country"] for df in valid_dfs])
         .value_counts()
         .head(10)
         .index
@@ -247,7 +259,10 @@ def save_dashboard(
     """
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    has_multi = batting_test is not None and batting_t20 is not None
+    has_multi = (
+        batting_test is not None and not batting_test.empty and
+        batting_t20 is not None and not batting_t20.empty
+    )
 
     if has_multi:
         fig = plt.figure(figsize=(16, 11), facecolor=STYLE["figure_facecolor"])

@@ -1,257 +1,154 @@
 """
-scraper/cricinfo.py
-
-Scrapes player batting and bowling statistics from the ESPNcricinfo
-stats engine (stats.espncricinfo.com). Uses requests + BeautifulSoup
-only — no API, no headless browser required for this endpoint.
-
-Supported formats:
-    1 = Test
-    2 = ODI
-    3 = T20I
-
-Usage (standalone):
-    python -m cricketscope.scraper.cricinfo --format odi --type batting --pages 2
+scraper/cricinfo.py - ESPNcricinfo stats scraper using pandas read_html
 """
 
 import re
 import time
 import argparse
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+from io import StringIO
 
 BASE_URL = "https://stats.espncricinfo.com/ci/engine/stats/index.html"
-
-FORMAT_MAP = {
-    "test": "1",
-    "odi":  "2",
-    "t20":  "3",
-}
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-}
-
+FORMAT_MAP = {"test": "1", "odi": "2", "t20": "3"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 REQUEST_DELAY = 2.0
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+def _split_player_country(text):
+    m = re.match(r"^(.*?)\(([A-Z]{2,4})\)$", str(text).strip())
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return str(text).strip(), ""
 
-def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
-    return {
-        "class":    fmt_code,
-        "type":     stat_type,
+
+def _fetch_html(fmt_code, stat_type, page):
+    params = {
+        "class": fmt_code,
+        "type": stat_type,
         "template": "results",
-        "orderby":  "runs" if stat_type == "batting" else "wickets",
-        "page":     str(page),
+        "orderby": "runs" if stat_type == "batting" else "wickets",
+        "page": str(page),
     }
-
-
-def _fetch_page(params: dict) -> BeautifulSoup | None:
     try:
-        response = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        print(f"[scraper] Request failed: {exc}")
+        r = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        return r.text
+    except requests.RequestException as e:
+        print(f"[scraper] Request failed: {e}")
         return None
 
-    soup = BeautifulSoup(response.text, "lxml")
 
-    if not soup.find("table", class_="engineTable"):
-        print("[scraper] No data table found on page — likely past last page.")
+def _extract_stats_table(html):
+    """Find the table that has a 'Player' column."""
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception as e:
+        print(f"[scraper] Failed to parse tables: {e}")
         return None
-
-    return soup
-
-
-def _split_player_country(cell_text: str) -> tuple[str, str]:
-    """
-    ESPNcricinfo puts player and country in one cell: 'SR Tendulkar(IND)'
-    Split into ('SR Tendulkar', 'IND').
-    """
-    match = re.match(r"^(.*?)\(([A-Z]{2,4})\)$", cell_text.strip())
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
-    return cell_text.strip(), ""
-
-
-def _get_stats_table(soup: BeautifulSoup) -> BeautifulSoup | None:
-    """
-    The page has 6 engineTables; the stats data is always table index 2
-    (51 rows: 1 header + 50 data rows).
-    """
-    tables = soup.find_all("table", class_="engineTable")
     for t in tables:
-        rows = t.find_all("tr")
-        if len(rows) > 5:  # header + data rows
-            first_cells = [td.get_text(strip=True) for td in rows[0].find_all("td")]
-            if "Player" in first_cells:
-                return t
+        if "Player" in t.columns:
+            return t
     return None
 
 
-def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
-    rows = []
-    table = _get_stats_table(soup)
-    if table is None:
-        return rows
-
-    all_rows = table.find_all("tr")
-
-    # First row is the header row (uses td, not th)
-    header_cells = [td.get_text(strip=True) for td in all_rows[0].find_all("td")]
-
-    for tr in all_rows[1:]:
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(header_cells):
-            continue
-
-        row = dict(zip(header_cells, cells))
-
-        player_raw = row.get("Player", "")
-        player_name, country = _split_player_country(player_raw)
-
-        rows.append({
-            "player_name":  player_name,
-            "country":      country,
-            "span":         row.get("Span", ""),
-            "matches":      row.get("Mat", ""),
-            "innings":      row.get("Inns", ""),
-            "not_outs":     row.get("NO", ""),
-            "runs":         row.get("Runs", ""),
-            "high_score":   row.get("HS", ""),
-            "batting_avg":  row.get("Ave", ""),
-            "balls_faced":  row.get("BF", ""),
-            "strike_rate":  row.get("SR", ""),
-            "hundreds":     row.get("100", ""),
-            "fifties":      row.get("50", ""),
-            "ducks":        row.get("0", ""),
-        })
-
-    return rows
-
-
-def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
-    rows = []
-    table = _get_stats_table(soup)
-    if table is None:
-        return rows
-
-    all_rows = table.find_all("tr")
-    header_cells = [td.get_text(strip=True) for td in all_rows[0].find_all("td")]
-
-    for tr in all_rows[1:]:
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(header_cells):
-            continue
-
-        row = dict(zip(header_cells, cells))
-
-        player_raw = row.get("Player", "")
-        player_name, country = _split_player_country(player_raw)
-
-        rows.append({
-            "player_name":    player_name,
-            "country":        country,
-            "span":           row.get("Span", ""),
-            "matches":        row.get("Mat", ""),
-            "innings":        row.get("Inns", ""),
-            "overs":          row.get("Overs", ""),
-            "maidens":        row.get("Mdns", ""),
-            "runs_conceded":  row.get("Runs", ""),
-            "wickets":        row.get("Wkts", ""),
-            "bowling_avg":    row.get("Ave", ""),
-            "economy":        row.get("Econ", ""),
-            "strike_rate":    row.get("SR", ""),
-            "four_wkt":       row.get("4", ""),
-            "five_wkt":       row.get("5", ""),
-            "ten_wkt":        row.get("10", ""),
-        })
-
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Public functions
-# ---------------------------------------------------------------------------
-
-def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
+def scrape_batting(fmt="odi", pages=3):
     fmt_code = FORMAT_MAP.get(fmt.lower())
-    if fmt_code is None:
-        raise ValueError(f"Unknown format '{fmt}'. Choose from: {list(FORMAT_MAP)}")
+    if not fmt_code:
+        raise ValueError(f"Unknown format '{fmt}'")
 
     all_rows = []
     for page in range(1, pages + 1):
         print(f"[scraper] Fetching batting {fmt.upper()} — page {page}/{pages}")
-        params = _build_params(fmt_code, "batting", page)
-        soup = _fetch_page(params)
-        if soup is None:
+        html = _fetch_html(fmt_code, "batting", page)
+        if html is None:
             break
-        rows = _parse_batting_table(soup)
-        if not rows:
+        df = _extract_stats_table(html)
+        if df is None or df.empty:
             break
-        all_rows.extend(rows)
+
+        for _, row in df.iterrows():
+            player_raw = str(row.get("Player", ""))
+            if player_raw in ("nan", "Player", ""):
+                continue
+            name, country = _split_player_country(player_raw)
+            all_rows.append({
+                "player_name":  name,
+                "country":      country,
+                "span":         str(row.get("Span", "")),
+                "matches":      str(row.get("Mat", "")),
+                "innings":      str(row.get("Inns", "")),
+                "not_outs":     str(row.get("NO", "")),
+                "runs":         str(row.get("Runs", "")),
+                "high_score":   str(row.get("HS", "")),
+                "batting_avg":  str(row.get("Ave", "")),
+                "balls_faced":  str(row.get("BF", "")),
+                "strike_rate":  str(row.get("SR", "")),
+                "hundreds":     str(row.get("100", "")),
+                "fifties":      str(row.get("50", "")),
+                "ducks":        str(row.get("0", "")),
+            })
         time.sleep(REQUEST_DELAY)
 
-    df = pd.DataFrame(all_rows)
-    print(f"[scraper] Batting scrape complete — {len(df)} rows collected.")
-    return df
+    df_out = pd.DataFrame(all_rows)
+    print(f"[scraper] Batting scrape complete — {len(df_out)} rows collected.")
+    return df_out
 
 
-def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
+def scrape_bowling(fmt="odi", pages=3):
     fmt_code = FORMAT_MAP.get(fmt.lower())
-    if fmt_code is None:
-        raise ValueError(f"Unknown format '{fmt}'. Choose from: {list(FORMAT_MAP)}")
+    if not fmt_code:
+        raise ValueError(f"Unknown format '{fmt}'")
 
     all_rows = []
     for page in range(1, pages + 1):
         print(f"[scraper] Fetching bowling {fmt.upper()} — page {page}/{pages}")
-        params = _build_params(fmt_code, "bowling", page)
-        soup = _fetch_page(params)
-        if soup is None:
+        html = _fetch_html(fmt_code, "bowling", page)
+        if html is None:
             break
-        rows = _parse_bowling_table(soup)
-        if not rows:
+        df = _extract_stats_table(html)
+        if df is None or df.empty:
             break
-        all_rows.extend(rows)
+
+        for _, row in df.iterrows():
+            player_raw = str(row.get("Player", ""))
+            if player_raw in ("nan", "Player", ""):
+                continue
+            name, country = _split_player_country(player_raw)
+            all_rows.append({
+                "player_name":    name,
+                "country":        country,
+                "span":           str(row.get("Span", "")),
+                "matches":        str(row.get("Mat", "")),
+                "innings":        str(row.get("Inns", "")),
+                "overs":          str(row.get("Overs", "")),
+                "maidens":        str(row.get("Mdns", "")),
+                "runs_conceded":  str(row.get("Runs", "")),
+                "wickets":        str(row.get("Wkts", "")),
+                "bowling_avg":    str(row.get("Ave", "")),
+                "economy":        str(row.get("Econ", "")),
+                "strike_rate":    str(row.get("SR", "")),
+                "four_wkt":       str(row.get("4", "")),
+                "five_wkt":       str(row.get("5", "")),
+                "ten_wkt":        str(row.get("10", "")),
+            })
         time.sleep(REQUEST_DELAY)
 
-    df = pd.DataFrame(all_rows)
-    print(f"[scraper] Bowling scrape complete — {len(df)} rows collected.")
-    return df
+    df_out = pd.DataFrame(all_rows)
+    print(f"[scraper] Bowling scrape complete — {len(df_out)} rows collected.")
+    return df_out
 
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scrape ESPNcricinfo stats")
-    parser.add_argument("--format", default="odi", choices=["test", "odi", "t20"],
-                        help="Match format to scrape (default: odi)")
-    parser.add_argument("--type", default="batting", choices=["batting", "bowling"],
-                        dest="stat_type", help="Stat type (default: batting)")
-    parser.add_argument("--pages", type=int, default=3,
-                        help="Number of pages to scrape (default: 3, 50 rows/page)")
-    parser.add_argument("--out", default=None,
-                        help="Optional CSV output path")
+    parser.add_argument("--format", default="odi", choices=["test", "odi", "t20"])
+    parser.add_argument("--type", default="batting", choices=["batting", "bowling"], dest="stat_type")
+    parser.add_argument("--pages", type=int, default=3)
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
-    if args.stat_type == "batting":
-        df = scrape_batting(fmt=args.format, pages=args.pages)
-    else:
-        df = scrape_bowling(fmt=args.format, pages=args.pages)
+    df = scrape_batting(fmt=args.format, pages=args.pages) if args.stat_type == "batting" \
+        else scrape_bowling(fmt=args.format, pages=args.pages)
 
     if args.out:
         df.to_csv(args.out, index=False)
