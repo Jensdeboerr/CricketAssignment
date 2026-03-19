@@ -6,12 +6,12 @@ stats engine (stats.espncricinfo.com). Uses requests + BeautifulSoup
 only — no API, no headless browser required for this endpoint.
 
 Supported formats:
-    1 = Test
-    2 = ODI
-    3 = T20I
+    test = Test
+    odi  = ODI
+    t20  = T20I
 
 Usage (standalone):
-    python -m cricketscope.scraper.cricinfo --format 2 --type batting --pages 2
+    python -m cricketscope.scraper.cricinfo --format odi --type batting --pages 2
 """
 
 import time
@@ -33,16 +33,29 @@ FORMAT_MAP = {
 }
 
 HEADERS = {
-    # Polite browser-like header to avoid 403s
+    # Polite browser-like headers to avoid 403s and timeouts
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive",
 }
 
 # Seconds to wait between paginated requests — be a polite scraper
-REQUEST_DELAY = 2.0
+REQUEST_DELAY = 3.0
+
+# Timeout per request in seconds
+REQUEST_TIMEOUT = 30
+
+# Retries on timeout
+MAX_RETRIES = 3
+RETRY_DELAY = 5.0
+
+# Values that mean "no data" on ESPNcricinfo
+SENTINELS = {"-", "DNB", "TDNB", "sub", ""}
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +66,7 @@ def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
     """Return the query-string parameters for one stats-engine request."""
     return {
         "class":    fmt_code,
-        "type":     stat_type,       # "batting" or "bowling"
+        "type":     stat_type,
         "template": "results",
         "orderby":  "runs" if stat_type == "batting" else "wickets",
         "page":     str(page),
@@ -63,23 +76,91 @@ def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
 def _fetch_page(params: dict) -> BeautifulSoup | None:
     """
     Fetch one page from the stats engine and return a BeautifulSoup object.
-    Returns None if the request fails or no data table is found.
+    Retries up to MAX_RETRIES times on timeout. Returns None on failure.
     """
-    try:
-        response = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        print(f"[scraper] Request failed: {exc}")
-        return None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.get(
+                BASE_URL,
+                params=params,
+                headers=HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "lxml")
 
-    soup = BeautifulSoup(response.text, "lxml")
+            if not soup.find("table", class_="engineTable"):
+                print("[scraper] No data table found on page — likely past last page.")
+                return None
 
-    # The stats engine wraps data in a table with class "engineTable"
-    if not soup.find("table", class_="engineTable"):
-        print("[scraper] No data table found on page — likely past last page.")
-        return None
+            return soup
 
-    return soup
+        except requests.exceptions.Timeout:
+            print(f"[scraper] Timeout (attempt {attempt}/{MAX_RETRIES}) — retrying in {RETRY_DELAY}s")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+
+        except requests.RequestException as exc:
+            print(f"[scraper] Request failed: {exc}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+
+    print(f"[scraper] All {MAX_RETRIES} attempts failed — skipping page.")
+    return None
+
+
+def _find_main_table(soup: BeautifulSoup):
+    """
+    Find the main data table on the page.
+    ESPNcricinfo has multiple engineTables — take the one with the most rows.
+    """
+    tables = soup.find_all("table", class_="engineTable")
+    if tables:
+        return max(tables, key=lambda t: len(t.find_all("tr")))
+    # Fallback: largest table on page
+    all_tables = soup.find_all("table")
+    if all_tables:
+        return max(all_tables, key=lambda t: len(t.find_all("tr")))
+    return None
+
+
+def _get_headers(table) -> list[str]:
+    """
+    Extract column headers from a table.
+    ESPNcricinfo sometimes uses <th>, sometimes <td> for headers.
+    Also checks for a <thead> block.
+    """
+    # Try <thead> with <th>
+    thead = table.find("thead")
+    if thead:
+        ths = thead.find_all("th")
+        if ths:
+            return [th.get_text(strip=True) for th in ths]
+
+    # Try any <tr> containing <th> elements
+    for tr in table.find_all("tr"):
+        ths = tr.find_all("th")
+        if ths:
+            return [th.get_text(strip=True) for th in ths]
+
+    # Fallback: first <tr> with <td> that looks like a header row
+    known_batting  = {"Player", "Mat", "Inns", "Runs", "Ave"}
+    known_bowling  = {"Player", "Mat", "Wkts", "Econ", "Ave"}
+    for tr in table.find_all("tr"):
+        tds = tr.find_all("td")
+        if not tds:
+            continue
+        texts = {td.get_text(strip=True) for td in tds}
+        if known_batting.issubset(texts) or known_bowling.issubset(texts):
+            return [td.get_text(strip=True) for td in tds]
+
+    return []
+
+
+def _clean(value: str) -> str:
+    """Return empty string for sentinel/missing values, otherwise strip whitespace."""
+    value = value.strip()
+    return "" if value in SENTINELS else value
 
 
 def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
@@ -92,23 +173,37 @@ def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
         hundreds, fifties, ducks
     """
     rows = []
-    table = soup.find("table", class_="engineTable")
+    table = _find_main_table(soup)
     if table is None:
         return rows
 
-    # Header row tells us column positions — don't hard-code indices
-    headers = [th.get_text(strip=True) for th in table.find_all("th")]
+    headers = _get_headers(table)
+    if not headers:
+        print("[scraper] WARNING: could not detect batting column headers.")
+        return rows
 
-    for tr in table.find_all("tr", class_=["data1", "data2"]):
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(headers):
+    print(f"[scraper] Batting headers: {headers}")
+    header_set = set(headers)
+
+    for tr in table.find_all("tr"):
+        cells = tr.find_all("td")
+        if len(cells) < 5:
             continue
 
-        row = dict(zip(headers, cells))
+        # Skip repeated header rows that appear mid-table
+        cell_texts = [c.get_text(strip=True) for c in cells]
+        if set(cell_texts[:5]).intersection(header_set):
+            continue
 
-        # Normalise key names to snake_case
+        # Map header name -> cell text
+        row = {h: _clean(cells[i].get_text(strip=True)) for i, h in enumerate(headers) if i < len(cells)}
+
+        player_name = row.get("Player", "")
+        if not player_name:
+            continue
+
         rows.append({
-            "player_name":  row.get("Player", ""),
+            "player_name":  player_name,
             "country":      row.get("Country", ""),
             "span":         row.get("Span", ""),
             "matches":      row.get("Mat", ""),
@@ -137,21 +232,35 @@ def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
         economy, strike_rate, four_wkt, five_wkt, ten_wkt
     """
     rows = []
-    table = soup.find("table", class_="engineTable")
+    table = _find_main_table(soup)
     if table is None:
         return rows
 
-    headers = [th.get_text(strip=True) for th in table.find_all("th")]
+    headers = _get_headers(table)
+    if not headers:
+        print("[scraper] WARNING: could not detect bowling column headers.")
+        return rows
 
-    for tr in table.find_all("tr", class_=["data1", "data2"]):
-        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(headers):
+    print(f"[scraper] Bowling headers: {headers}")
+    header_set = set(headers)
+
+    for tr in table.find_all("tr"):
+        cells = tr.find_all("td")
+        if len(cells) < 5:
             continue
 
-        row = dict(zip(headers, cells))
+        cell_texts = [c.get_text(strip=True) for c in cells]
+        if set(cell_texts[:5]).intersection(header_set):
+            continue
+
+        row = {h: _clean(cells[i].get_text(strip=True)) for i, h in enumerate(headers) if i < len(cells)}
+
+        player_name = row.get("Player", "")
+        if not player_name:
+            continue
 
         rows.append({
-            "player_name":    row.get("Player", ""),
+            "player_name":    player_name,
             "country":        row.get("Country", ""),
             "span":           row.get("Span", ""),
             "matches":        row.get("Mat", ""),
@@ -172,7 +281,7 @@ def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Public functions (imported by other modules)
+# Public functions (imported by main.py and other modules)
 # ---------------------------------------------------------------------------
 
 def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
@@ -199,9 +308,11 @@ def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
             break
         rows = _parse_batting_table(soup)
         if not rows:
+            print(f"[scraper] No rows parsed on page {page} — stopping.")
             break
         all_rows.extend(rows)
-        time.sleep(REQUEST_DELAY)
+        if page < pages:
+            time.sleep(REQUEST_DELAY)
 
     df = pd.DataFrame(all_rows)
     print(f"[scraper] Batting scrape complete — {len(df)} rows collected.")
@@ -232,9 +343,11 @@ def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
             break
         rows = _parse_bowling_table(soup)
         if not rows:
+            print(f"[scraper] No rows parsed on page {page} — stopping.")
             break
         all_rows.extend(rows)
-        time.sleep(REQUEST_DELAY)
+        if page < pages:
+            time.sleep(REQUEST_DELAY)
 
     df = pd.DataFrame(all_rows)
     print(f"[scraper] Bowling scrape complete — {len(df)} rows collected.")
