@@ -11,9 +11,10 @@ Supported formats:
     3 = T20I
 
 Usage (standalone):
-    python -m cricketscope.scraper.cricinfo --format 2 --type batting --pages 2
+    python -m cricketscope.scraper.cricinfo --format odi --type batting --pages 2
 """
 
+import re
 import time
 import argparse
 import requests
@@ -33,15 +34,13 @@ FORMAT_MAP = {
 }
 
 HEADERS = {
-    # Polite browser-like header to avoid 403s
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
 
-# Seconds to wait between paginated requests — be a polite scraper
 REQUEST_DELAY = 2.0
 
 
@@ -50,10 +49,9 @@ REQUEST_DELAY = 2.0
 # ---------------------------------------------------------------------------
 
 def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
-    """Return the query-string parameters for one stats-engine request."""
     return {
         "class":    fmt_code,
-        "type":     stat_type,       # "batting" or "bowling"
+        "type":     stat_type,
         "template": "results",
         "orderby":  "runs" if stat_type == "batting" else "wickets",
         "page":     str(page),
@@ -61,12 +59,8 @@ def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
 
 
 def _fetch_page(params: dict) -> BeautifulSoup | None:
-    """
-    Fetch one page from the stats engine and return a BeautifulSoup object.
-    Returns None if the request fails or no data table is found.
-    """
     try:
-        response = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
+        response = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
         print(f"[scraper] Request failed: {exc}")
@@ -74,7 +68,6 @@ def _fetch_page(params: dict) -> BeautifulSoup | None:
 
     soup = BeautifulSoup(response.text, "lxml")
 
-    # The stats engine wraps data in a table with class "engineTable"
     if not soup.find("table", class_="engineTable"):
         print("[scraper] No data table found on page — likely past last page.")
         return None
@@ -82,34 +75,56 @@ def _fetch_page(params: dict) -> BeautifulSoup | None:
     return soup
 
 
-def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
+def _split_player_country(cell_text: str) -> tuple[str, str]:
     """
-    Parse the batting stats table from a BeautifulSoup page.
+    ESPNcricinfo puts player and country in one cell: 'SR Tendulkar(IND)'
+    Split into ('SR Tendulkar', 'IND').
+    """
+    match = re.match(r"^(.*?)\(([A-Z]{2,4})\)$", cell_text.strip())
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return cell_text.strip(), ""
 
-    Columns extracted:
-        player_name, country, span, matches, innings, not_outs,
-        runs, high_score, batting_avg, balls_faced, strike_rate,
-        hundreds, fifties, ducks
+
+def _get_stats_table(soup: BeautifulSoup) -> BeautifulSoup | None:
     """
+    The page has 6 engineTables; the stats data is always table index 2
+    (51 rows: 1 header + 50 data rows).
+    """
+    tables = soup.find_all("table", class_="engineTable")
+    for t in tables:
+        rows = t.find_all("tr")
+        if len(rows) > 5:  # header + data rows
+            first_cells = [td.get_text(strip=True) for td in rows[0].find_all("td")]
+            if "Player" in first_cells:
+                return t
+    return None
+
+
+def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
     rows = []
-    table = soup.find("table", class_="engineTable")
+    table = _get_stats_table(soup)
     if table is None:
         return rows
 
-    # Header row tells us column positions — don't hard-code indices
-    headers = [th.get_text(strip=True) for th in table.find_all("th")]
+    all_rows = table.find_all("tr")
 
-    for tr in table.find_all("tr", class_=["data1", "data2"]):
+    # First row is the header row (uses td, not th)
+    header_cells = [td.get_text(strip=True) for td in all_rows[0].find_all("td")]
+
+    for tr in all_rows[1:]:
         cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(headers):
+        if len(cells) < len(header_cells):
             continue
 
-        row = dict(zip(headers, cells))
+        row = dict(zip(header_cells, cells))
 
-        # Normalise key names to snake_case
+        player_raw = row.get("Player", "")
+        player_name, country = _split_player_country(player_raw)
+
         rows.append({
-            "player_name":  row.get("Player", ""),
-            "country":      row.get("Country", ""),
+            "player_name":  player_name,
+            "country":      country,
             "span":         row.get("Span", ""),
             "matches":      row.get("Mat", ""),
             "innings":      row.get("Inns", ""),
@@ -128,31 +143,27 @@ def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
 
 
 def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
-    """
-    Parse the bowling stats table from a BeautifulSoup page.
-
-    Columns extracted:
-        player_name, country, span, matches, innings, overs,
-        maidens, runs_conceded, wickets, bowling_avg,
-        economy, strike_rate, four_wkt, five_wkt, ten_wkt
-    """
     rows = []
-    table = soup.find("table", class_="engineTable")
+    table = _get_stats_table(soup)
     if table is None:
         return rows
 
-    headers = [th.get_text(strip=True) for th in table.find_all("th")]
+    all_rows = table.find_all("tr")
+    header_cells = [td.get_text(strip=True) for td in all_rows[0].find_all("td")]
 
-    for tr in table.find_all("tr", class_=["data1", "data2"]):
+    for tr in all_rows[1:]:
         cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < len(headers):
+        if len(cells) < len(header_cells):
             continue
 
-        row = dict(zip(headers, cells))
+        row = dict(zip(header_cells, cells))
+
+        player_raw = row.get("Player", "")
+        player_name, country = _split_player_country(player_raw)
 
         rows.append({
-            "player_name":    row.get("Player", ""),
-            "country":        row.get("Country", ""),
+            "player_name":    player_name,
+            "country":        country,
             "span":           row.get("Span", ""),
             "matches":        row.get("Mat", ""),
             "innings":        row.get("Inns", ""),
@@ -172,20 +183,10 @@ def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Public functions (imported by other modules)
+# Public functions
 # ---------------------------------------------------------------------------
 
 def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
-    """
-    Scrape batting statistics for the given format.
-
-    Args:
-        fmt:   One of 'test', 'odi', 't20'. Defaults to 'odi'.
-        pages: Number of paginated result pages to fetch (25 rows each).
-
-    Returns:
-        pd.DataFrame with one row per player.
-    """
     fmt_code = FORMAT_MAP.get(fmt.lower())
     if fmt_code is None:
         raise ValueError(f"Unknown format '{fmt}'. Choose from: {list(FORMAT_MAP)}")
@@ -209,16 +210,6 @@ def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
 
 
 def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
-    """
-    Scrape bowling statistics for the given format.
-
-    Args:
-        fmt:   One of 'test', 'odi', 't20'. Defaults to 'odi'.
-        pages: Number of paginated result pages to fetch (25 rows each).
-
-    Returns:
-        pd.DataFrame with one row per player.
-    """
     fmt_code = FORMAT_MAP.get(fmt.lower())
     if fmt_code is None:
         raise ValueError(f"Unknown format '{fmt}'. Choose from: {list(FORMAT_MAP)}")
@@ -242,7 +233,7 @@ def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point (python -m cricketscope.scraper.cricinfo ...)
+# CLI entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -252,7 +243,7 @@ if __name__ == "__main__":
     parser.add_argument("--type", default="batting", choices=["batting", "bowling"],
                         dest="stat_type", help="Stat type (default: batting)")
     parser.add_argument("--pages", type=int, default=3,
-                        help="Number of pages to scrape (default: 3, 25 rows/page)")
+                        help="Number of pages to scrape (default: 3, 50 rows/page)")
     parser.add_argument("--out", default=None,
                         help="Optional CSV output path")
     args = parser.parse_args()
