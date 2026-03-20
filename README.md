@@ -1,17 +1,22 @@
 # CricketScope
 
-A Python tool that scrapes player statistics from [ESPNcricinfo](https://stats.espncricinfo.com) and generates a visual dashboard. All data is collected via HTML scraping using `requests` and `BeautifulSoup` — no official API is used.
+**Group members:** Jesper de Voogd, Wisse Seunnenga, Jens de Boer  
+**Course:** DSS Advanced Programming 
 
 ---
 
-## What it does
+## What this project does
 
-1. **Scrapes** batting and bowling stats for Test, ODI, and T20I formats from the ESPNcricinfo stats engine
-2. **Cleans** the raw data (handles missing values, casts types, derives career span columns)
-3. **Visualises** the results as a multi-panel PNG dashboard:
-   - Top 10 batters by runs (bar chart)
-   - Batting average vs strike rate scatter (coloured by country)
-   - Format comparison — mean batting average by country across formats
+CricketScope scrapes cricket player statistics from ESPNcricinfo and generates a visual dashboard. The tool collects batting and bowling stats for Test, ODI, and T20I formats, cleans the data, and produces charts showing top batters, batting average vs strike rate, and format comparisons across countries.
+
+---
+
+## Data
+
+Data is scraped from the ESPNcricinfo stats engine:  
+`https://stats.espncricinfo.com/ci/engine/stats/index.html`
+
+This is a static HTML page. No official API is used. Scraping is done with `requests` and `BeautifulSoup`.
 
 ---
 
@@ -101,59 +106,19 @@ python -m cricketscope.preprocessing.clean
 # Visualisation standalone (smoke test with synthetic data)
 python -m cricketscope.visualisation.dashboard
 ```
-
 ---
 
 ## Data source
 
-All data is scraped from `stats.espncricinfo.com/ci/engine/stats/index.html` — a static HTML stats engine that has been publicly available for over 20 years. The scraper:
+All data is scraped from `stats.espncricinfo.com/ci/engine/stats/index.html` a static HTML stats engine that has been publicly available for over 20 years. The scraper:
 - Sets a descriptive `User-Agent` header
 - Waits 2 seconds between paginated requests to avoid overloading the server
 
----
-
-## Variables collected
-
-### Batting
-
-| Column | Description |
-|---|---|
-| `player_name` | Player full name |
-| `country` | Representing nation |
-| `span` | Career span (e.g. 2015-2023) |
-| `matches` | Matches played |
-| `innings` | Innings batted |
-| `not_outs` | Not-out innings |
-| `runs` | Total runs scored |
-| `high_score` | Highest individual score |
-| `batting_avg` | Batting average |
-| `balls_faced` | Total balls faced |
-| `strike_rate` | Strike rate |
-| `hundreds` | Centuries scored |
-| `fifties` | Half-centuries scored |
-| `ducks` | Duck dismissals |
-
-### Bowling
-
-| Column | Description |
-|---|---|
-| `player_name` | Player full name |
-| `country` | Representing nation |
-| `span` | Career span |
-| `matches` | Matches played |
-| `overs` | Overs bowled |
-| `wickets` | Total wickets taken |
-| `bowling_avg` | Bowling average |
-| `economy` | Economy rate |
-| `strike_rate` | Bowling strike rate |
-| `five_wkt` | Five-wicket hauls |
-
----
 
 ## Expected output
 
 Running the full pipeline for ODI batting (3 pages) should produce:
-- ~75 player rows in the cleaned DataFrame
+- player rows in the cleaned DataFrame
 - `output/dashboard.png` — a 16×11 inch PNG with two or three chart panels
 
 Exact values will vary with ESPNcricinfo's live data.
