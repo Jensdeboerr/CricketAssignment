@@ -19,7 +19,7 @@ import argparse
 import os
 import pandas as pd
 
-from cricketscope.scraper      import scrape_batting, scrape_bowling
+from cricketscope.scraper       import scrape_batting, scrape_bowling
 from cricketscope.preprocessing import clean_batting, clean_bowling
 from cricketscope.visualisation import save_dashboard
 
@@ -51,10 +51,10 @@ def run_pipeline(
 
             # 1. Scrape
             if t == "batting":
-                raw = scrape_batting(fmt=f, pages=pages)
+                raw     = scrape_batting(fmt=f, pages=pages)
                 cleaned = clean_batting(raw)
             else:
-                raw = scrape_bowling(fmt=f, pages=pages)
+                raw     = scrape_bowling(fmt=f, pages=pages)
                 cleaned = clean_bowling(raw)
 
             key = f"{t}_{f}"
@@ -121,12 +121,14 @@ def main():
         batting_odi  = results.get("batting_odi")
         batting_test = results.get("batting_test")
         batting_t20  = results.get("batting_t20")
+        bowling_odi  = results.get("bowling_odi")
 
         if batting_odi is not None:
             save_dashboard(
                 batting_odi=batting_odi,
                 batting_test=batting_test,
                 batting_t20=batting_t20,
+                bowling_odi=bowling_odi,
                 output_path=os.path.join(OUTPUT_DIR, "dashboard.png"),
             )
         else:

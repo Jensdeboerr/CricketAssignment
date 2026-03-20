@@ -14,6 +14,7 @@ Usage (standalone):
     python -m cricketscope.scraper.cricinfo --format odi --type batting --pages 2
 """
 
+import re
 import time
 import argparse
 import requests
@@ -33,7 +34,6 @@ FORMAT_MAP = {
 }
 
 HEADERS = {
-    # Polite browser-like headers to avoid 403s and timeouts
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -44,17 +44,11 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-# Seconds to wait between paginated requests — be a polite scraper
-REQUEST_DELAY = 3.0
-
-# Timeout per request in seconds
+REQUEST_DELAY   = 3.0
 REQUEST_TIMEOUT = 30
+MAX_RETRIES     = 3
+RETRY_DELAY     = 5.0
 
-# Retries on timeout
-MAX_RETRIES = 3
-RETRY_DELAY = 5.0
-
-# Values that mean "no data" on ESPNcricinfo
 SENTINELS = {"-", "DNB", "TDNB", "sub", ""}
 
 
@@ -63,7 +57,7 @@ SENTINELS = {"-", "DNB", "TDNB", "sub", ""}
 # ---------------------------------------------------------------------------
 
 def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
-    """Return the query-string parameters for one stats-engine request."""
+    """Return query-string parameters for one stats-engine request."""
     return {
         "class":    fmt_code,
         "type":     stat_type,
@@ -76,23 +70,18 @@ def _build_params(fmt_code: str, stat_type: str, page: int) -> dict:
 def _fetch_page(params: dict) -> BeautifulSoup | None:
     """
     Fetch one page from the stats engine and return a BeautifulSoup object.
-    Retries up to MAX_RETRIES times on timeout. Returns None on failure.
+    Retries up to MAX_RETRIES times on timeout/503. Returns None on failure.
     """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.get(
-                BASE_URL,
-                params=params,
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
+                BASE_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "lxml")
-
             if not soup.find("table", class_="engineTable"):
-                print("[scraper] No data table found on page — likely past last page.")
+                print("[scraper] No data table found — likely past last page.")
                 return None
-
             return soup
 
         except requests.exceptions.Timeout:
@@ -110,14 +99,10 @@ def _fetch_page(params: dict) -> BeautifulSoup | None:
 
 
 def _find_main_table(soup: BeautifulSoup):
-    """
-    Find the main data table on the page.
-    ESPNcricinfo has multiple engineTables — take the one with the most rows.
-    """
+    """Return the largest engineTable on the page."""
     tables = soup.find_all("table", class_="engineTable")
     if tables:
         return max(tables, key=lambda t: len(t.find_all("tr")))
-    # Fallback: largest table on page
     all_tables = soup.find_all("table")
     if all_tables:
         return max(all_tables, key=lambda t: len(t.find_all("tr")))
@@ -125,53 +110,61 @@ def _find_main_table(soup: BeautifulSoup):
 
 
 def _get_headers(table) -> list[str]:
-    """
-    Extract column headers from a table.
-    ESPNcricinfo sometimes uses <th>, sometimes <td> for headers.
-    Also checks for a <thead> block.
-    """
-    # Try <thead> with <th>
+    """Extract column headers from a table, handling th and td variants."""
     thead = table.find("thead")
     if thead:
         ths = thead.find_all("th")
         if ths:
             return [th.get_text(strip=True) for th in ths]
-
-    # Try any <tr> containing <th> elements
     for tr in table.find_all("tr"):
         ths = tr.find_all("th")
         if ths:
             return [th.get_text(strip=True) for th in ths]
-
-    # Fallback: first <tr> with <td> that looks like a header row
-    known_batting  = {"Player", "Mat", "Inns", "Runs", "Ave"}
-    known_bowling  = {"Player", "Mat", "Wkts", "Econ", "Ave"}
+    known = {"Player", "Mat", "Runs", "Ave"}
     for tr in table.find_all("tr"):
         tds = tr.find_all("td")
         if not tds:
             continue
         texts = {td.get_text(strip=True) for td in tds}
-        if known_batting.issubset(texts) or known_bowling.issubset(texts):
+        if known.issubset(texts):
             return [td.get_text(strip=True) for td in tds]
-
     return []
 
 
 def _clean(value: str) -> str:
-    """Return empty string for sentinel/missing values, otherwise strip whitespace."""
+    """Return empty string for sentinel values, else strip whitespace."""
     value = value.strip()
     return "" if value in SENTINELS else value
 
 
-def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
+def _parse_player_cell(cell) -> tuple[str, str]:
     """
-    Parse the batting stats table from a BeautifulSoup page.
+    ESPNcricinfo encodes both name and country in the player cell:
+        e.g. 'SR Tendulkar (IND)' or 'SR Tendulkar(Asia/IND)'
+    Returns (player_name, country).
+    """
+    raw = cell.get_text(strip=True)
 
-    Columns extracted:
-        player_name, country, span, matches, innings, not_outs,
-        runs, high_score, batting_avg, balls_faced, strike_rate,
-        hundreds, fifties, ducks
-    """
+    # Match trailing parenthesised country code, e.g. (IND) or (Asia/ICC/SL)
+    match = re.search(r"\(([^)]+)\)$", raw)
+    if match:
+        country_raw = match.group(1)
+        player_name = raw[:match.start()].strip()
+        # Take the last segment if slash-separated, e.g. Asia/ICC/SL -> SL
+        country = country_raw.split("/")[-1].strip()
+    else:
+        player_name = raw
+        country = "Unknown"
+
+    return player_name, country
+
+
+# ---------------------------------------------------------------------------
+# Table parsers
+# ---------------------------------------------------------------------------
+
+def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
+    """Parse the batting stats table into a list of row dicts."""
     rows = []
     table = _find_main_table(soup)
     if table is None:
@@ -179,58 +172,60 @@ def _parse_batting_table(soup: BeautifulSoup) -> list[dict]:
 
     headers = _get_headers(table)
     if not headers:
-        print("[scraper] WARNING: could not detect batting column headers.")
+        print("[scraper] WARNING: could not detect batting headers.")
         return rows
 
     print(f"[scraper] Batting headers: {headers}")
     header_set = set(headers)
+
+    # Find the index of the Player column
+    try:
+        player_idx = headers.index("Player")
+    except ValueError:
+        player_idx = 0
 
     for tr in table.find_all("tr"):
         cells = tr.find_all("td")
         if len(cells) < 5:
             continue
 
-        # Skip repeated header rows that appear mid-table
         cell_texts = [c.get_text(strip=True) for c in cells]
         if set(cell_texts[:5]).intersection(header_set):
-            continue
+            continue  # skip repeated header rows
 
-        # Map header name -> cell text
-        row = {h: _clean(cells[i].get_text(strip=True)) for i, h in enumerate(headers) if i < len(cells)}
+        row = {
+            h: _clean(cells[i].get_text(strip=True))
+            for i, h in enumerate(headers)
+            if i < len(cells)
+        }
 
-        player_name = row.get("Player", "")
+        # Extract player name and country from the player cell
+        player_name, country = _parse_player_cell(cells[player_idx])
         if not player_name:
             continue
 
         rows.append({
             "player_name":  player_name,
-            "country":      row.get("Country", ""),
+            "country":      country,
             "span":         row.get("Span", ""),
-            "matches":      row.get("Mat", ""),
+            "matches":      row.get("Mat",  ""),
             "innings":      row.get("Inns", ""),
-            "not_outs":     row.get("NO", ""),
+            "not_outs":     row.get("NO",   ""),
             "runs":         row.get("Runs", ""),
-            "high_score":   row.get("HS", ""),
-            "batting_avg":  row.get("Ave", ""),
-            "balls_faced":  row.get("BF", ""),
-            "strike_rate":  row.get("SR", ""),
-            "hundreds":     row.get("100", ""),
-            "fifties":      row.get("50", ""),
-            "ducks":        row.get("0", ""),
+            "high_score":   row.get("HS",   ""),
+            "batting_avg":  row.get("Ave",  ""),
+            "balls_faced":  row.get("BF",   ""),
+            "strike_rate":  row.get("SR",   ""),
+            "hundreds":     row.get("100",  ""),
+            "fifties":      row.get("50",   ""),
+            "ducks":        row.get("0",    ""),
         })
 
     return rows
 
 
 def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
-    """
-    Parse the bowling stats table from a BeautifulSoup page.
-
-    Columns extracted:
-        player_name, country, span, matches, innings, overs,
-        maidens, runs_conceded, wickets, bowling_avg,
-        economy, strike_rate, four_wkt, five_wkt, ten_wkt
-    """
+    """Parse the bowling stats table into a list of row dicts."""
     rows = []
     table = _find_main_table(soup)
     if table is None:
@@ -238,11 +233,16 @@ def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
 
     headers = _get_headers(table)
     if not headers:
-        print("[scraper] WARNING: could not detect bowling column headers.")
+        print("[scraper] WARNING: could not detect bowling headers.")
         return rows
 
     print(f"[scraper] Bowling headers: {headers}")
     header_set = set(headers)
+
+    try:
+        player_idx = headers.index("Player")
+    except ValueError:
+        player_idx = 0
 
     for tr in table.find_all("tr"):
         cells = tr.find_all("td")
@@ -253,35 +253,39 @@ def _parse_bowling_table(soup: BeautifulSoup) -> list[dict]:
         if set(cell_texts[:5]).intersection(header_set):
             continue
 
-        row = {h: _clean(cells[i].get_text(strip=True)) for i, h in enumerate(headers) if i < len(cells)}
+        row = {
+            h: _clean(cells[i].get_text(strip=True))
+            for i, h in enumerate(headers)
+            if i < len(cells)
+        }
 
-        player_name = row.get("Player", "")
+        player_name, country = _parse_player_cell(cells[player_idx])
         if not player_name:
             continue
 
         rows.append({
             "player_name":    player_name,
-            "country":        row.get("Country", ""),
-            "span":           row.get("Span", ""),
-            "matches":        row.get("Mat", ""),
-            "innings":        row.get("Inns", ""),
+            "country":        country,
+            "span":           row.get("Span",  ""),
+            "matches":        row.get("Mat",   ""),
+            "innings":        row.get("Inns",  ""),
             "overs":          row.get("Overs", ""),
-            "maidens":        row.get("Mdns", ""),
-            "runs_conceded":  row.get("Runs", ""),
-            "wickets":        row.get("Wkts", ""),
-            "bowling_avg":    row.get("Ave", ""),
-            "economy":        row.get("Econ", ""),
-            "strike_rate":    row.get("SR", ""),
-            "four_wkt":       row.get("4", ""),
-            "five_wkt":       row.get("5", ""),
-            "ten_wkt":        row.get("10", ""),
+            "maidens":        row.get("Mdns",  ""),
+            "runs_conceded":  row.get("Runs",  ""),
+            "wickets":        row.get("Wkts",  ""),
+            "bowling_avg":    row.get("Ave",   ""),
+            "economy":        row.get("Econ",  ""),
+            "strike_rate":    row.get("SR",    ""),
+            "four_wkt":       row.get("4",     ""),
+            "five_wkt":       row.get("5",     ""),
+            "ten_wkt":        row.get("10",    ""),
         })
 
     return rows
 
 
 # ---------------------------------------------------------------------------
-# Public functions (imported by main.py and other modules)
+# Public functions
 # ---------------------------------------------------------------------------
 
 def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
@@ -289,8 +293,8 @@ def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
     Scrape batting statistics for the given format.
 
     Args:
-        fmt:   One of 'test', 'odi', 't20'. Defaults to 'odi'.
-        pages: Number of paginated result pages to fetch (25 rows each).
+        fmt:   One of 'test', 'odi', 't20'.
+        pages: Number of paginated pages to fetch (25 rows each).
 
     Returns:
         pd.DataFrame with one row per player.
@@ -302,13 +306,12 @@ def scrape_batting(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
     all_rows = []
     for page in range(1, pages + 1):
         print(f"[scraper] Fetching batting {fmt.upper()} — page {page}/{pages}")
-        params = _build_params(fmt_code, "batting", page)
-        soup = _fetch_page(params)
+        soup = _fetch_page(_build_params(fmt_code, "batting", page))
         if soup is None:
             break
         rows = _parse_batting_table(soup)
         if not rows:
-            print(f"[scraper] No rows parsed on page {page} — stopping.")
+            print(f"[scraper] No rows on page {page} — stopping.")
             break
         all_rows.extend(rows)
         if page < pages:
@@ -324,8 +327,8 @@ def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
     Scrape bowling statistics for the given format.
 
     Args:
-        fmt:   One of 'test', 'odi', 't20'. Defaults to 'odi'.
-        pages: Number of paginated result pages to fetch (25 rows each).
+        fmt:   One of 'test', 'odi', 't20'.
+        pages: Number of paginated pages to fetch (25 rows each).
 
     Returns:
         pd.DataFrame with one row per player.
@@ -337,13 +340,12 @@ def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
     all_rows = []
     for page in range(1, pages + 1):
         print(f"[scraper] Fetching bowling {fmt.upper()} — page {page}/{pages}")
-        params = _build_params(fmt_code, "bowling", page)
-        soup = _fetch_page(params)
+        soup = _fetch_page(_build_params(fmt_code, "bowling", page))
         if soup is None:
             break
         rows = _parse_bowling_table(soup)
         if not rows:
-            print(f"[scraper] No rows parsed on page {page} — stopping.")
+            print(f"[scraper] No rows on page {page} — stopping.")
             break
         all_rows.extend(rows)
         if page < pages:
@@ -355,25 +357,21 @@ def scrape_bowling(fmt: str = "odi", pages: int = 3) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point (python -m cricketscope.scraper.cricinfo ...)
+# CLI entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scrape ESPNcricinfo stats")
-    parser.add_argument("--format", default="odi", choices=["test", "odi", "t20"],
-                        help="Match format to scrape (default: odi)")
+    parser.add_argument("--format", default="odi", choices=["test", "odi", "t20"])
     parser.add_argument("--type", default="batting", choices=["batting", "bowling"],
-                        dest="stat_type", help="Stat type (default: batting)")
-    parser.add_argument("--pages", type=int, default=3,
-                        help="Number of pages to scrape (default: 3, 25 rows/page)")
-    parser.add_argument("--out", default=None,
-                        help="Optional CSV output path")
+                        dest="stat_type")
+    parser.add_argument("--pages", type=int, default=3)
+    parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
-    if args.stat_type == "batting":
-        df = scrape_batting(fmt=args.format, pages=args.pages)
-    else:
-        df = scrape_bowling(fmt=args.format, pages=args.pages)
+    df = scrape_batting(fmt=args.format, pages=args.pages) \
+         if args.stat_type == "batting" \
+         else scrape_bowling(fmt=args.format, pages=args.pages)
 
     if args.out:
         df.to_csv(args.out, index=False)
