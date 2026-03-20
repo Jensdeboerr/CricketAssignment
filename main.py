@@ -1,20 +1,3 @@
-"""
-main.py — CricketScope entry point
-
-Orchestrates the full pipeline:
-    scrape -> clean -> visualise
-
-Usage examples:
-    # Scrape ODI batting only, show dashboard
-    python main.py --format odi --type batting --pages 3
-
-    # Scrape all three formats (batting + bowling) and save CSVs
-    python main.py --format all --type all --pages 3 --save-csv
-
-    # Use pre-saved CSVs (skip scraping)
-    python main.py --load-csv data/processed/batting_odi.csv --type batting
-"""
-
 import argparse
 import os
 import pandas as pd
@@ -34,11 +17,7 @@ def run_pipeline(
     pages: int      = 3,
     save_csv: bool  = False,
 ) -> dict[str, pd.DataFrame]:
-    """
-    Run the full scrape -> clean pipeline for one format and stat type.
 
-    Returns a dict with keys like 'batting_odi', 'bowling_t20', etc.
-    """
     results = {}
     target_formats = FORMATS if fmt == "all" else [fmt]
     target_types   = ["batting", "bowling"] if stat_type == "all" else [stat_type]
@@ -68,7 +47,6 @@ def run_pipeline(
                 print(f"[main] Saved {path}")
 
     return results
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -103,7 +81,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # --- Load or scrape ---
+    # Load or scrape
     if args.load_csv:
         print(f"[main] Loading from {args.load_csv}")
         df = pd.read_csv(args.load_csv)
@@ -116,7 +94,7 @@ def main():
             save_csv=args.save_csv,
         )
 
-    # --- Visualise ---
+    # Visualise
     if not args.no_plot:
         batting_odi  = results.get("batting_odi")
         batting_test = results.get("batting_test")
