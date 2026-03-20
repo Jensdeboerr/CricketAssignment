@@ -75,7 +75,7 @@ def plot_avg_vs_sr(
     filtered = df.dropna(subset=["batting_avg", "strike_rate", "innings"])
     filtered = filtered[filtered["innings"] >= min_innings]
 
-    # Assign a colour per country
+    # asssign a colour per country
     countries = filtered["country"].unique()
     cmap = matplotlib.colormaps.get_cmap("tab20").resampled(len(countries))
     colour_map = {c: cmap(i) for i, c in enumerate(countries)}
@@ -92,7 +92,7 @@ def plot_avg_vs_sr(
             s=60,
         )
 
-    # Label a few standout players (top 5 by runs)
+    # label a few standout players (top 5 by runs)
     top5 = filtered.nlargest(5, "runs")
     for _, row in top5.iterrows():
         ax.annotate(
@@ -129,8 +129,8 @@ def plot_format_comparison(
     if ax is None:
         _, ax = plt.subplots(figsize=(10, 5))
 
-    # Compute mean batting_avg per country per format
-    # Skip any DataFrames that are empty or missing required columns
+    # compute mean batting_avg per country per format
+    # skip any DataFrames that are empty or missing required columns
     summary = {}
     for fmt_label, df in dfs.items():
         if df.empty or "batting_avg" not in df.columns or "country" not in df.columns:
@@ -180,37 +180,14 @@ def plot_format_comparison(
 
     return ax
 
-
-# ---------------------------------------------------------------------------
 # Dashboard composer
-# ---------------------------------------------------------------------------
-
 def save_dashboard(
     batting_odi: pd.DataFrame,
     batting_test: pd.DataFrame = None,
     batting_t20: pd.DataFrame = None,
     output_path: str = "output/dashboard.png",
 ) -> str:
-    """
-    Compose a 2x2 dashboard figure and save it to disk.
-
-    Always includes:
-        - Top 10 ODI batters bar chart (top-left)
-        - ODI avg vs SR scatter (top-right)
-
-    If Test and T20 DataFrames are also provided:
-        - Format comparison grouped bar (bottom row, full width)
-
-    Args:
-        batting_odi:  Cleaned ODI batting DataFrame (required).
-        batting_test: Cleaned Test batting DataFrame (optional).
-        batting_t20:  Cleaned T20 batting DataFrame (optional).
-        output_path:  File path to save the PNG. Directory is created
-                      automatically if it does not exist.
-
-    Returns:
-        Absolute path to the saved file.
-    """
+   
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     has_multi = (
@@ -247,10 +224,7 @@ def save_dashboard(
     return abs_path
 
 
-# ---------------------------------------------------------------------------
 # Standalone smoke test
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     # Generate synthetic data so this can run without a network connection
     rng = np.random.default_rng(42)
