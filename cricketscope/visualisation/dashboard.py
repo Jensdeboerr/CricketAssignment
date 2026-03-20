@@ -1,17 +1,3 @@
-"""
-visualisation/dashboard.py
-
-Generates charts and a multi-panel dashboard from cleaned player stats.
-
-Charts produced:
-    1. Top N batters by total runs (horizontal bar chart)
-    2. Batting average vs strike rate scatter (coloured by country)
-    3. Format comparison — average runs per format (grouped bar)
-
-Usage (standalone):
-    python -m cricketscope.visualisation.dashboard
-"""
-
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -19,11 +5,7 @@ import pandas as pd
 import numpy as np
 import matplotlib
 
-
-# ---------------------------------------------------------------------------
 # Style defaults — override here to change the look of all charts
-# ---------------------------------------------------------------------------
-
 STYLE = {
     "figure_facecolor": "#FAFAFA",
     "axes_facecolor":   "#F4F4F4",
@@ -41,29 +23,14 @@ plt.rcParams.update({
     "axes.spines.right":  False,
 })
 
-
-# ---------------------------------------------------------------------------
 # Individual chart functions
-# ---------------------------------------------------------------------------
-
 def plot_top_batters(
     df: pd.DataFrame,
     n: int = 10,
     fmt_label: str = "ODI",
     ax: plt.Axes = None,
 ) -> plt.Axes:
-    """
-    Horizontal bar chart of the top N batters by total runs.
 
-    Args:
-        df:        Cleaned batting DataFrame.
-        n:         Number of players to show. Defaults to 10.
-        fmt_label: Format label shown in the chart title.
-        ax:        Existing Axes to draw on (creates new figure if None).
-
-    Returns:
-        matplotlib Axes object.
-    """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
@@ -101,19 +68,7 @@ def plot_avg_vs_sr(
     min_innings: int = 20,
     ax: plt.Axes = None,
 ) -> plt.Axes:
-    """
-    Scatter plot of batting average (x) vs strike rate (y),
-    coloured by country. Useful for spotting high-impact batters.
-
-    Args:
-        df:          Cleaned batting DataFrame.
-        fmt_label:   Format label shown in the chart title.
-        min_innings: Minimum innings filter to remove low-sample players.
-        ax:          Existing Axes to draw on (creates new figure if None).
-
-    Returns:
-        matplotlib Axes object.
-    """
+    
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
 
@@ -154,7 +109,6 @@ def plot_avg_vs_sr(
     ax.set_facecolor(STYLE["axes_facecolor"])
 
     return ax
-
 
 def plot_format_comparison(
     dfs: dict[str, pd.DataFrame],
