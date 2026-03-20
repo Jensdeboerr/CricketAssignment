@@ -23,13 +23,13 @@ cricketscope/
 │   ├── __init__.py
 │   ├── scraper/
 │   │   ├── __init__.py
-│   │   └── cricinfo.py       ← HTML scraping (Person A)
+│   │   └── cricinfo.py       ← HTML scraping
 │   ├── preprocessing/
 │   │   ├── __init__.py
-│   │   └── clean.py          ← Data cleaning (Person B)
+│   │   └── clean.py          ← Data cleaning
 │   └── visualisation/
 │       ├── __init__.py
-│       └── dashboard.py      ← Charts and dashboard (Person C)
+│       └── dashboard.py      ← Charts and dashboard
 ├── data/
 │   ├── raw/                  ← gitignored
 │   └── processed/            ← gitignored
