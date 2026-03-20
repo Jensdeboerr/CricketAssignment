@@ -1,7 +1,3 @@
-"""
-scraper/cricinfo.py - ESPNcricinfo stats scraper using pandas read_html
-"""
-
 import re
 import time
 import argparse
@@ -14,13 +10,11 @@ FORMAT_MAP = {"test": "1", "odi": "2", "t20": "3"}
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 REQUEST_DELAY = 2.0
 
-
 def _split_player_country(text):
     m = re.match(r"^(.*?)\(([A-Z]{2,4})\)$", str(text).strip())
     if m:
         return m.group(1).strip(), m.group(2).strip()
     return str(text).strip(), ""
-
 
 def _fetch_html(fmt_code, stat_type, page):
     params = {
@@ -38,7 +32,6 @@ def _fetch_html(fmt_code, stat_type, page):
         print(f"[scraper] Request failed: {e}")
         return None
 
-
 def _extract_stats_table(html):
     """Find the table that has a 'Player' column."""
     try:
@@ -50,7 +43,6 @@ def _extract_stats_table(html):
         if "Player" in t.columns:
             return t
     return None
-
 
 def scrape_batting(fmt="odi", pages=3):
     fmt_code = FORMAT_MAP.get(fmt.lower())
@@ -94,7 +86,6 @@ def scrape_batting(fmt="odi", pages=3):
     print(f"[scraper] Batting scrape complete — {len(df_out)} rows collected.")
     return df_out
 
-
 def scrape_bowling(fmt="odi", pages=3):
     fmt_code = FORMAT_MAP.get(fmt.lower())
     if not fmt_code:
@@ -137,7 +128,6 @@ def scrape_bowling(fmt="odi", pages=3):
     df_out = pd.DataFrame(all_rows)
     print(f"[scraper] Bowling scrape complete — {len(df_out)} rows collected.")
     return df_out
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scrape ESPNcricinfo stats")
