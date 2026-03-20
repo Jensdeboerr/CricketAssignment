@@ -21,7 +21,7 @@ import numpy as np
 # Sentinel values used by ESPNcricinfo to mean "no data"
 # ---------------------------------------------------------------------------
 
-SENTINELS = {"-", "DNB", "TDNB", "absent", "sub", ""}
+SENTINELS = {"-", "DNB", "TDNB", "absent", "sub", "", "Unknown"}
 
 # ---------------------------------------------------------------------------
 # Column dtype specifications
@@ -50,8 +50,10 @@ def _replace_sentinels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _strip_not_out_marker(series: pd.Series) -> pd.Series:
-    """Remove the trailing '*' that marks a not-out innings (e.g. '183*' -> '183')."""
-    return series.astype(str).str.replace(r"\*$", "", regex=True)
+    """Remove the trailing '*' that marks a not-out innings (e.g. '183*' -> '183').
+    Safely handles NaN values by only applying to non-null entries.
+    """
+    return series.where(series.isna(), series.astype(str).str.replace(r"\*$", "", regex=True))
 
 
 def _cast_numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -66,20 +68,27 @@ def _parse_span(df: pd.DataFrame) -> pd.DataFrame:
     """
     Split the 'span' column (e.g. '2015-2023') into two integer columns:
     career_start and career_end.
+    Safely handles NaN by converting to string only where value is not null.
     """
     if "span" not in df.columns:
         return df
-    split = df["span"].str.extract(r"(\d{4})-(\d{4})")
+
+    # Convert only non-null values to string before extracting
+    span_str = df["span"].where(df["span"].isna(), df["span"].astype(str))
+    split = span_str.str.extract(r"(\d{4})-(\d{4})")
     df["career_start"] = pd.to_numeric(split[0], errors="coerce")
     df["career_end"]   = pd.to_numeric(split[1], errors="coerce")
     return df
 
 
 def _clean_player_name(df: pd.DataFrame) -> pd.DataFrame:
-    """Strip extra whitespace from player name and country fields."""
+    """Strip extra whitespace from player name and country fields.
+    Safely handles NaN by converting to string only where value is not null.
+    """
     for col in ["player_name", "country"]:
         if col in df.columns:
-            df[col] = df[col].str.strip()
+            # Only strip where value is not NaN
+            df[col] = df[col].where(df[col].isna(), df[col].astype(str).str.strip())
     return df
 
 
