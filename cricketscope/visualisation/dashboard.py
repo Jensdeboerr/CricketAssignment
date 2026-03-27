@@ -42,7 +42,7 @@ def plot_top_batters(
     bars = ax.barh(
         top["player_name"],
         top["runs"],
-        color=STYLE["bar_color"],
+        color=[STYLE["bar_color"] if i != 0 else "#D85A30" for i in range(len(top))],  # highlight top batter
         edgecolor="white",
         linewidth=0.5,
     )
