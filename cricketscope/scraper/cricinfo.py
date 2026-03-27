@@ -17,6 +17,7 @@ def _split_player_country(text):
     return str(text).strip(), ""
 
 def _fetch_html(fmt_code, stat_type, page):
+    """Fetch HTML from ESPNcricinfo for a given format, stat type, and page."""
     params = {
         "class": fmt_code,
         "type": stat_type,
@@ -44,90 +45,62 @@ def _extract_stats_table(html):
             return t
     return None
 
-def scrape_batting(fmt="odi", pages=3):
+def _extract_stats_table(html):
+    ...
+    return None
+
+# -----------------------
+# Add here:
+def scrape_stats(fmt="odi", stat_type="batting", pages=3):
+    """Scrape batting or bowling stats for the given format and number of pages."""
     fmt_code = FORMAT_MAP.get(fmt.lower())
     if not fmt_code:
         raise ValueError(f"Unknown format '{fmt}'")
 
     all_rows = []
     for page in range(1, pages + 1):
-        print(f"[scraper] Fetching batting {fmt.upper()} — page {page}/{pages}")
-        html = _fetch_html(fmt_code, "batting", page)
+        print(f"[scraper] Fetching {stat_type} {fmt.upper()} — page {page}/{pages}")
+        html = _fetch_html(fmt_code, stat_type, page)
         if html is None:
             break
+
         df = _extract_stats_table(html)
         if df is None or df.empty:
             break
 
         for _, row in df.iterrows():
-            player_raw = str(row.get("Player", ""))
-            if player_raw in ("nan", "Player", ""):
-                continue
-            name, country = _split_player_country(player_raw)
-            all_rows.append({
-                "player_name":  name,
-                "country":      country,
-                "span":         str(row.get("Span", "")),
-                "matches":      str(row.get("Mat", "")),
-                "innings":      str(row.get("Inns", "")),
-                "not_outs":     str(row.get("NO", "")),
-                "runs":         str(row.get("Runs", "")),
-                "high_score":   str(row.get("HS", "")),
-                "batting_avg":  str(row.get("Ave", "")),
-                "balls_faced":  str(row.get("BF", "")),
-                "strike_rate":  str(row.get("SR", "")),
-                "hundreds":     str(row.get("100", "")),
-                "fifties":      str(row.get("50", "")),
-                "ducks":        str(row.get("0", "")),
-            })
-        time.sleep(REQUEST_DELAY)
+            try:
+                player_raw = str(row.get("Player", ""))
+                if player_raw in ("nan", "Player", ""):
+                    continue
 
-    df_out = pd.DataFrame(all_rows)
-    print(f"[scraper] Batting scrape complete — {len(df_out)} rows collected.")
-    return df_out
+                name, country = _split_player_country(player_raw)
+
+                if stat_type == "batting":
+                    all_rows.append({
+                        "player_name": name,
+                        "country": country,
+                        "runs": str(row.get("Runs", "")),
+                    })
+                else:
+                    all_rows.append({
+                        "player_name": name,
+                        "country": country,
+                        "wickets": str(row.get("Wkts", "")),
+                    })
+            except Exception as e:
+                print(f"[scraper] Skipping row due to error: {e}")
+
+                time.sleep(REQUEST_DELAY)
+
+            return pd.DataFrame(all_rows)
+
+def scrape_batting(fmt="odi", pages=3):
+    return scrape_stats(fmt, "batting", pages)
 
 def scrape_bowling(fmt="odi", pages=3):
-    fmt_code = FORMAT_MAP.get(fmt.lower())
-    if not fmt_code:
-        raise ValueError(f"Unknown format '{fmt}'")
+    return scrape_stats(fmt, "bowling", pages)
 
-    all_rows = []
-    for page in range(1, pages + 1):
-        print(f"[scraper] Fetching bowling {fmt.upper()} — page {page}/{pages}")
-        html = _fetch_html(fmt_code, "bowling", page)
-        if html is None:
-            break
-        df = _extract_stats_table(html)
-        if df is None or df.empty:
-            break
-
-        for _, row in df.iterrows():
-            player_raw = str(row.get("Player", ""))
-            if player_raw in ("nan", "Player", ""):
-                continue
-            name, country = _split_player_country(player_raw)
-            all_rows.append({
-                "player_name":    name,
-                "country":        country,
-                "span":           str(row.get("Span", "")),
-                "matches":        str(row.get("Mat", "")),
-                "innings":        str(row.get("Inns", "")),
-                "overs":          str(row.get("Overs", "")),
-                "maidens":        str(row.get("Mdns", "")),
-                "runs_conceded":  str(row.get("Runs", "")),
-                "wickets":        str(row.get("Wkts", "")),
-                "bowling_avg":    str(row.get("Ave", "")),
-                "economy":        str(row.get("Econ", "")),
-                "strike_rate":    str(row.get("SR", "")),
-                "four_wkt":       str(row.get("4", "")),
-                "five_wkt":       str(row.get("5", "")),
-                "ten_wkt":        str(row.get("10", "")),
-            })
-        time.sleep(REQUEST_DELAY)
-
-    df_out = pd.DataFrame(all_rows)
-    print(f"[scraper] Bowling scrape complete — {len(df_out)} rows collected.")
-    return df_out
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scrape ESPNcricinfo stats")
