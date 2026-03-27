@@ -1,17 +1,3 @@
-"""
-visualisation/dashboard.py
-
-Generates charts and a multi-panel dashboard from cleaned player stats.
-
-Charts produced:
-    1. Top N batters by total runs (horizontal bar chart)
-    2. Batting average vs strike rate scatter (coloured by country)
-    3. Format comparison — average runs per format (grouped bar)
-
-Usage (standalone):
-    python -m cricketscope.visualisation.dashboard
-"""
-
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -19,11 +5,7 @@ import pandas as pd
 import numpy as np
 import matplotlib
 
-
-# ---------------------------------------------------------------------------
 # Style defaults — override here to change the look of all charts
-# ---------------------------------------------------------------------------
-
 STYLE = {
     "figure_facecolor": "#FAFAFA",
     "axes_facecolor":   "#F4F4F4",
@@ -41,29 +23,14 @@ plt.rcParams.update({
     "axes.spines.right":  False,
 })
 
-
-# ---------------------------------------------------------------------------
 # Individual chart functions
-# ---------------------------------------------------------------------------
-
 def plot_top_batters(
     df: pd.DataFrame,
     n: int = 10,
     fmt_label: str = "ODI",
     ax: plt.Axes = None,
 ) -> plt.Axes:
-    """
-    Horizontal bar chart of the top N batters by total runs.
 
-    Args:
-        df:        Cleaned batting DataFrame.
-        n:         Number of players to show. Defaults to 10.
-        fmt_label: Format label shown in the chart title.
-        ax:        Existing Axes to draw on (creates new figure if None).
-
-    Returns:
-        matplotlib Axes object.
-    """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
@@ -75,7 +42,7 @@ def plot_top_batters(
     bars = ax.barh(
         top["player_name"],
         top["runs"],
-        color=STYLE["bar_color"],
+        color=[STYLE["bar_color"] if i != 0 else "#D85A30" for i in range(len(top))],  # highlight top batter
         edgecolor="white",
         linewidth=0.5,
     )
@@ -101,26 +68,14 @@ def plot_avg_vs_sr(
     min_innings: int = 20,
     ax: plt.Axes = None,
 ) -> plt.Axes:
-    """
-    Scatter plot of batting average (x) vs strike rate (y),
-    coloured by country. Useful for spotting high-impact batters.
-
-    Args:
-        df:          Cleaned batting DataFrame.
-        fmt_label:   Format label shown in the chart title.
-        min_innings: Minimum innings filter to remove low-sample players.
-        ax:          Existing Axes to draw on (creates new figure if None).
-
-    Returns:
-        matplotlib Axes object.
-    """
+    
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
 
     filtered = df.dropna(subset=["batting_avg", "strike_rate", "innings"])
     filtered = filtered[filtered["innings"] >= min_innings]
 
-    # Assign a colour per country
+    # asssign a colour per country
     countries = filtered["country"].unique()
     cmap = matplotlib.colormaps.get_cmap("tab20").resampled(len(countries))
     colour_map = {c: cmap(i) for i, c in enumerate(countries)}
@@ -137,7 +92,7 @@ def plot_avg_vs_sr(
             s=60,
         )
 
-    # Label a few standout players (top 5 by runs)
+    # label a few standout players (top 5 by runs)
     top5 = filtered.nlargest(5, "runs")
     for _, row in top5.iterrows():
         ax.annotate(
@@ -154,7 +109,6 @@ def plot_avg_vs_sr(
     ax.set_facecolor(STYLE["axes_facecolor"])
 
     return ax
-
 
 def plot_format_comparison(
     dfs: dict[str, pd.DataFrame],
@@ -175,20 +129,32 @@ def plot_format_comparison(
     if ax is None:
         _, ax = plt.subplots(figsize=(10, 5))
 
-    # Compute mean batting_avg per country per format
+    # compute mean batting_avg per country per format
+    # skip any DataFrames that are empty or missing required columns
     summary = {}
     for fmt_label, df in dfs.items():
+        if df.empty or "batting_avg" not in df.columns or "country" not in df.columns:
+            print(f"[visualisation] Skipping {fmt_label} — no data available.")
+            continue
         summary[fmt_label] = (
             df.dropna(subset=["batting_avg", "country"])
             .groupby("country")["batting_avg"]
             .mean()
         )
 
+    if not summary:
+        ax.text(0.5, 0.5, "No format comparison data available",
+                ha="center", va="center", transform=ax.transAxes, fontsize=12)
+        ax.set_title("Mean batting average by country and format")
+        return ax
+
     combined = pd.DataFrame(summary).fillna(0)
 
-    # Keep top countries by total player representation
+    # Keep top countries by total player representation (only from non-empty frames)
+    valid_dfs = [df for df in dfs.values()
+                 if not df.empty and "country" in df.columns]
     top_countries = (
-        pd.concat([df["country"] for df in dfs.values()])
+        pd.concat([df["country"] for df in valid_dfs])
         .value_counts()
         .head(10)
         .index
@@ -214,40 +180,20 @@ def plot_format_comparison(
 
     return ax
 
-
-# ---------------------------------------------------------------------------
 # Dashboard composer
-# ---------------------------------------------------------------------------
-
 def save_dashboard(
     batting_odi: pd.DataFrame,
     batting_test: pd.DataFrame = None,
     batting_t20: pd.DataFrame = None,
     output_path: str = "output/dashboard.png",
 ) -> str:
-    """
-    Compose a 2x2 dashboard figure and save it to disk.
-
-    Always includes:
-        - Top 10 ODI batters bar chart (top-left)
-        - ODI avg vs SR scatter (top-right)
-
-    If Test and T20 DataFrames are also provided:
-        - Format comparison grouped bar (bottom row, full width)
-
-    Args:
-        batting_odi:  Cleaned ODI batting DataFrame (required).
-        batting_test: Cleaned Test batting DataFrame (optional).
-        batting_t20:  Cleaned T20 batting DataFrame (optional).
-        output_path:  File path to save the PNG. Directory is created
-                      automatically if it does not exist.
-
-    Returns:
-        Absolute path to the saved file.
-    """
+   
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    has_multi = batting_test is not None and batting_t20 is not None
+    has_multi = (
+        batting_test is not None and not batting_test.empty and
+        batting_t20 is not None and not batting_t20.empty
+    )
 
     if has_multi:
         fig = plt.figure(figsize=(16, 11), facecolor=STYLE["figure_facecolor"])
@@ -278,10 +224,7 @@ def save_dashboard(
     return abs_path
 
 
-# ---------------------------------------------------------------------------
 # Standalone smoke test
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     # Generate synthetic data so this can run without a network connection
     rng = np.random.default_rng(42)
